@@ -126,7 +126,20 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		id := *pathParams.PrimaryID
 		pi, ok := s.store.getPaymentIntent(session, id)
 		if !ok {
-			return false // not seeded/created here — leave to the generic generator
+			// Adopt a PaymentIntent the app references but that we've never
+			// seen — typically one created before the session opted in (at page
+			// load) or an id seeded in the app's own DB fixtures. Real Stripe
+			// would know this id, so build a spec-correct base for it and let
+			// the lifecycle continue from here.
+			base, err := s.generateResourceBase(paymentIntentResourceID)
+			if err != nil {
+				fmt.Printf("Couldn't adopt PaymentIntent %s: %v\n", id, err)
+				writeResponse(w, r, start, http.StatusInternalServerError, createInternalServerError())
+				return true
+			}
+			pi = base
+			pi["id"] = id
+			setStatus(pi, "requires_confirmation")
 		}
 
 		switch paymentIntentActionFromPath(r.URL.Path) {
@@ -371,6 +384,9 @@ func (s *StubServer) ensureChargeForPI(session string, pi map[string]interface{}
 	charge["amount"] = pi["amount"]
 	charge["currency"] = pi["currency"]
 	charge["payment_intent"] = getString(pi, "id")
+	if customer := pi["customer"]; customer != nil {
+		charge["customer"] = customer
+	}
 	if pm := pi["payment_method"]; pm != nil {
 		charge["payment_method"] = pm
 	}

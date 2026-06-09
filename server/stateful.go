@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/base64"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -127,6 +128,31 @@ func (s *statefulStore) getResource(session, resourceID, id string) (map[string]
 	}
 	obj, ok := byID[id]
 	return obj, ok
+}
+
+// listResources returns all stored objects of a resource kind in the session,
+// ordered by id for determinism.
+func (s *statefulStore) listResources(session, resourceID string) []map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sess, ok := s.sessions[session]
+	if !ok {
+		return []map[string]interface{}{}
+	}
+	byID, ok := sess.resources[resourceID]
+	if !ok {
+		return []map[string]interface{}{}
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	objects := make([]map[string]interface{}, 0, len(ids))
+	for _, id := range ids {
+		objects = append(objects, byID[id])
+	}
+	return objects
 }
 
 // enqueueEvent appends a webhook-event envelope to the session's queue.

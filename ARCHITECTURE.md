@@ -291,6 +291,7 @@ command, which is what makes event ordering and timing deterministic (no sleeps)
 |---|---|
 | `POST /v1/_mock/config` | `handleConfig` (opt the session into the stateful layer) |
 | `POST /v1/_mock/payment_intents` | `handleSeedPaymentIntent` (base + overrides; also opts in) |
+| `GET /v1/_mock/payment_intents` | list the session's stored PaymentIntents (`listResources`) |
 | `POST /v1/_mock/payment_intents/{id}/emit` | `handleEmitPaymentIntentEvent` |
 | `GET /v1/_mock/events` | drain via `statefulStore.drainEvents` |
 | `POST /v1/_mock/reset` | `statefulStore.reset` |
