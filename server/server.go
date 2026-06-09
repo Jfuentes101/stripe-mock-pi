@@ -206,6 +206,7 @@ type StubServer struct {
 	fixtures           *spec.Fixtures
 	routes             map[spec.HTTPVerb][]stubServerRoute
 	spec               *spec.Spec
+	store              *statefulStore
 	strictVersionCheck bool
 	verbose            bool
 }
@@ -229,6 +230,14 @@ func NewStubServer(fixtures *spec.Fixtures, spec *spec.Spec, strictVersionCheck,
 func (s *StubServer) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	fmt.Printf("Request: %v %v\n", r.Method, r.URL.Path)
+
+	// Test-only control plane (`/v1/_mock/*`). Handled before auth and routing,
+	// and bypasses strict OpenAPI validation. No-op in normal operation since no
+	// client hits these paths.
+	if isControlRequest(r) {
+		s.handleControlRequest(w, r, start)
+		return
+	}
 
 	//
 	// Validate headers
@@ -287,6 +296,14 @@ func (s *StubServer) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		message := fmt.Sprintf(invalidRoute, r.Method, r.URL.Path)
 		stripeError := createStripeError(typeInvalidRequestError, message)
 		writeResponse(w, r, start, http.StatusNotFound, stripeError)
+		return
+	}
+
+	// If a test has seeded this stateful resource for the current session, serve
+	// the stored object directly, bypassing the generic spec-driven generator.
+	if stored, ok := s.maybeStatefulResponse(r, route, pathParams); ok {
+		w.Header().Set("Content-Type", "application/json")
+		writeResponse(w, r, start, http.StatusOK, stored)
 		return
 	}
 
@@ -380,6 +397,7 @@ func (s *StubServer) initializeRouter() error {
 	var numValidators int
 
 	s.routes = make(map[spec.HTTPVerb][]stubServerRoute)
+	s.store = newStatefulStore()
 
 	componentsForValidation := spec.GetComponentsForValidation(&s.spec.Components)
 
