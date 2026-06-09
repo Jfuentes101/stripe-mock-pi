@@ -138,6 +138,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 				return true
 			}
 			pi = base
+			resetPaymentIntentLifecycleFields(pi)
 			pi["id"] = id
 			setStatus(pi, "requires_confirmation")
 		}
@@ -172,6 +173,7 @@ func (s *StubServer) createPaymentIntent(session string, params map[string]inter
 	if err != nil {
 		return nil, err
 	}
+	resetPaymentIntentLifecycleFields(pi)
 
 	copyPaymentIntentParams(pi, params)
 
@@ -311,6 +313,18 @@ func paymentIntentActionFromPath(path string) string {
 
 func setStatus(pi map[string]interface{}, status string) {
 	pi["status"] = status
+}
+
+// resetPaymentIntentLifecycleFields clears fields owned by the state machine on
+// a freshly built base object. The bundled fixture carries arbitrary sample
+// values for these (e.g. a non-null last_payment_error), which would otherwise
+// leak into new objects — a create would look like a decline, and every adopted
+// intent would share the fixture's next_action.
+func resetPaymentIntentLifecycleFields(pi map[string]interface{}) {
+	pi["next_action"] = nil
+	pi["last_payment_error"] = nil
+	pi["latest_charge"] = nil
+	pi["amount_received"] = 0
 }
 
 //

@@ -60,6 +60,16 @@ func TestPaymentIntentEvents(t *testing.T) {
 		assert.Empty(t, drainEvents(server, key), "draining again yields nothing")
 	})
 
+	t.Run("plain create queues only created (fixture junk must not look like a decline)", func(t *testing.T) {
+		key := "sk_test_e0"
+		_, pi := postForm(server, "/v1/payment_intents", "amount=1000&currency=usd", key)
+		assert.Equal(t, "requires_payment_method", pi["status"])
+		assert.Nil(t, pi["last_payment_error"], "fixture sample error must be cleared")
+		assert.Nil(t, pi["next_action"], "fixture sample next_action must be cleared")
+
+		assert.Equal(t, []string{"payment_intent.created"}, eventTypes(drainEvents(server, key)))
+	})
+
 	t.Run("decline queues charge.failed and payment_failed", func(t *testing.T) {
 		key := "sk_test_e2"
 		seedPI(server, `{"id":"pi_e2","status":"requires_confirmation","amount":3000,"currency":"usd"}`, key)
