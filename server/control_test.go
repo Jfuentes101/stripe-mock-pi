@@ -29,6 +29,8 @@ func roundtrip(server *StubServer, method, url, body string, headers map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	// Opt every test request into the stateful layer (it's off by default).
+	req.Header.Set("X-Stripe-Mock-Stateful", "1")
 	w := httptest.NewRecorder()
 	server.HandleRequest(w, req)
 
@@ -39,6 +41,25 @@ func roundtrip(server *StubServer, method, url, body string, headers map[string]
 		_ = json.Unmarshal(raw, &parsed)
 	}
 	return resp.StatusCode, parsed
+}
+
+func TestStatefulLayerIsOptIn(t *testing.T) {
+	server := newRealStubServer(t)
+	key := "sk_test_optout"
+
+	// Create a PaymentIntent WITHOUT opting in: no X-Stripe-Mock-Stateful header,
+	// no /config, no seed. This must fall through to the generic generator.
+	req := httptest.NewRequest(http.MethodPost, "https://stripe.com/v1/payment_intents",
+		bytes.NewBufferString("amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true"))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	server.HandleRequest(w, req)
+	assert.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	// The stateful path would have queued payment_intent.created/succeeded; the
+	// generic path queues nothing. An empty queue confirms we stayed generic.
+	assert.Empty(t, drainEvents(server, key))
 }
 
 func TestControlPlanePaymentIntents(t *testing.T) {

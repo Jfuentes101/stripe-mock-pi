@@ -23,6 +23,12 @@ import (
 // API-key-derived default. Useful when the same key is shared across workers.
 const mockSessionHeader = "X-Stripe-Mock-Session"
 
+// mockStatefulHeader, when present on a request, opts the session into the
+// stateful PaymentIntent layer on the fly. Convenient for direct test requests;
+// out-of-band clients (e.g. an app SDK that can't set custom headers) opt in via
+// POST /v1/_mock/config instead.
+const mockStatefulHeader = "X-Stripe-Mock-Stateful"
+
 // defaultSessionID is used when a request carries no usable session identifier.
 const defaultSessionID = "default"
 
@@ -36,6 +42,11 @@ type sessionStore struct {
 	// events is a FIFO queue of webhook-event envelopes produced by state
 	// transitions, drained on demand by the test.
 	events []map[string]interface{}
+
+	// statefulEnabled gates the stateful PaymentIntent layer for this session.
+	// It's off by default so the mock behaves exactly like upstream (generic,
+	// stateless responses) unless a test opts in.
+	statefulEnabled bool
 }
 
 func newSessionStore() *sessionStore {
@@ -71,6 +82,22 @@ func (s *statefulStore) reset(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+}
+
+// setStatefulEnabled toggles whether the stateful PaymentIntent layer is active
+// for a session.
+func (s *statefulStore) setStatefulEnabled(session string, enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureSession(session).statefulEnabled = enabled
+}
+
+// statefulEnabled reports whether a session has opted into the stateful layer.
+func (s *statefulStore) statefulEnabled(session string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sess, ok := s.sessions[session]
+	return ok && sess.statefulEnabled
 }
 
 // putResource stores (or replaces) a resource object in the session.

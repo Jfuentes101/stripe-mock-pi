@@ -160,6 +160,14 @@ drive a realistic lifecycle (`requires_payment_method` → `requires_action` →
 webhook events on demand. State is built on the spec-correct base object, so it
 stays faithful to Stripe's official schemas without hand-maintained fixtures.
 
+### Opting in
+
+The stateful layer is **off by default** — every session behaves like the
+generic, stateless mock until it opts in, so existing test suites are unaffected.
+A session opts in by calling `POST /v1/_mock/config` (typically in `setup`),
+seeding a PaymentIntent, or sending an `X-Stripe-Mock-Stateful` header on a
+request. When off, PaymentIntent requests fall through to the normal generator.
+
 ### How state is scoped
 
 State is partitioned per **session** so parallel test workers don't collide. The
@@ -198,7 +206,8 @@ ordering and timing deterministic (no sleeps):
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/_mock/payment_intents` | Seed a PaymentIntent. The body is a JSON object of overrides, deep-merged onto a spec-correct base (e.g. `{"id":"pi_x","amount":5530,"status":"requires_action"}`). |
+| `POST /v1/_mock/config` | Opt the session into the stateful layer (`{"stateful_payment_intents": true}`; defaults to true when the body is empty). |
+| `POST /v1/_mock/payment_intents` | Seed a PaymentIntent. The body is a JSON object of overrides, deep-merged onto a spec-correct base (e.g. `{"id":"pi_x","amount":5530,"status":"requires_action"}`). Also opts the session in. |
 | `POST /v1/_mock/payment_intents/{id}/emit?type=...` | Queue an event wrapping the current state of a stored PaymentIntent (type derived from status when omitted). |
 | `GET /v1/_mock/events` | Drain queued events (FIFO) for the session. |
 | `POST /v1/_mock/reset` | Clear all state for the session. |

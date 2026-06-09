@@ -40,6 +40,9 @@ func (s *StubServer) handleControlRequest(w http.ResponseWriter, r *http.Request
 		s.store.reset(session)
 		writeResponse(w, r, start, http.StatusOK, map[string]interface{}{"object": "_mock.reset"})
 
+	case endpoint == "config" && r.Method == http.MethodPost:
+		s.handleConfig(w, r, start, session)
+
 	case endpoint == "payment_intents" && r.Method == http.MethodPost:
 		s.handleSeedPaymentIntent(w, r, start, session)
 
@@ -61,6 +64,30 @@ func (s *StubServer) handleControlRequest(w http.ResponseWriter, r *http.Request
 		writeResponse(w, r, start, http.StatusNotFound,
 			createStripeError(typeInvalidRequestError, message))
 	}
+}
+
+// handleConfig sets per-session behavior. Currently it opts the session into the
+// stateful PaymentIntent layer (default true when the body omits the flag), so
+// the mock stays generic/stateless for every session that doesn't ask.
+func (s *StubServer) handleConfig(w http.ResponseWriter, r *http.Request, start time.Time, session string) {
+	cfg, err := decodeJSONObject(r.Body)
+	if err != nil {
+		message := fmt.Sprintf("Couldn't parse config body: %v", err)
+		writeResponse(w, r, start, http.StatusBadRequest,
+			createStripeError(typeInvalidRequestError, message))
+		return
+	}
+
+	enabled := true
+	if v, ok := cfg["stateful_payment_intents"].(bool); ok {
+		enabled = v
+	}
+	s.store.setStatefulEnabled(session, enabled)
+
+	writeResponse(w, r, start, http.StatusOK, map[string]interface{}{
+		"object":                   "_mock.config",
+		"stateful_payment_intents": enabled,
+	})
 }
 
 // handleSeedPaymentIntent seeds a PaymentIntent into the session store. The body
@@ -93,6 +120,8 @@ func (s *StubServer) handleSeedPaymentIntent(w http.ResponseWriter, r *http.Requ
 	}
 
 	s.store.putPaymentIntent(session, id, obj)
+	// Seeding a PaymentIntent implies the test wants stateful behavior.
+	s.store.setStatefulEnabled(session, true)
 	writeResponse(w, r, start, http.StatusOK, obj)
 }
 
