@@ -46,6 +46,15 @@ func (s *StubServer) handleControlRequest(w http.ResponseWriter, r *http.Request
 	case endpoint == "payment_intents" && r.Method == http.MethodPost:
 		s.handleSeedPaymentIntent(w, r, start, session)
 
+	case endpoint == "payment_intents" && r.Method == http.MethodGet:
+		// List the session's stored PaymentIntents. Lets a test discover which
+		// PaymentIntent the app touched (created or adopted) so it can drive
+		// the next transition (e.g. simulate the browser-side confirm).
+		writeResponse(w, r, start, http.StatusOK, map[string]interface{}{
+			"object": "list",
+			"data":   s.store.listResources(session, paymentIntentResourceID),
+		})
+
 	case endpoint == "events" && r.Method == http.MethodGet:
 		// Drain queued events in FIFO order. This is the test's deterministic
 		// "deliver now" knob — events accumulate as the app drives the API and
