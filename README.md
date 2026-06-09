@@ -45,10 +45,12 @@ stripe-mock supports the following features:
 
 Limitations:
 
-- stripe-mock is stateless. Data you send on a `POST` request will be validated,
-  but it will be completely ignored beyond that. It will not be reflected on the
-  response or on any future request -- unlike the real Stripe API, which stores
-  the information you send it.
+- stripe-mock is stateless by default. Data you send on a `POST` request will be
+  validated, but it will be completely ignored beyond that. It will not be
+  reflected on the response or on any future request -- unlike the real Stripe
+  API, which stores the information you send it. (This fork adds an opt-in
+  stateful layer for PaymentIntents; see
+  [Stateful PaymentIntent testing](#stateful-paymentintent-testing-fork-extension).)
 - For polymorphic endpoints (say one that returns either a card or a bank
   account), only a single resource type is ever returned. There's no way to
   specify which one that is.
@@ -143,6 +145,86 @@ After you've started stripe-mock, you can try a sample request against it:
 
 ```sh
 curl -i http://localhost:12111/v1/charges -H "Authorization: Bearer sk_test_123"
+```
+
+## Stateful PaymentIntent testing (fork extension)
+
+> This is an extension in this fork. Upstream stripe-mock is intentionally
+> stateless (see [Limitations](#features-and-limitations)), and behavior for
+> every resource other than PaymentIntents is unchanged. The endpoints below live
+> under `/v1/_mock/` and are meant for test suites only.
+
+For PaymentIntents, stripe-mock can keep state across requests so a test can
+drive a realistic lifecycle (`requires_payment_method` → `requires_action` →
+`succeeded`, the manual-capture branch, declines, etc.) and receive the matching
+webhook events on demand. State is built on the spec-correct base object, so it
+stays faithful to Stripe's official schemas without hand-maintained fixtures.
+
+### How state is scoped
+
+State is partitioned per **session** so parallel test workers don't collide. The
+session id is the API key from the `Authorization` header (use a distinct key per
+worker), or an explicit `X-Stripe-Mock-Session` header. `POST /v1/_mock/reset`
+clears the current session — call it between tests.
+
+### Driving the lifecycle
+
+`create`, `confirm`, `capture`, `cancel`, and `update` mutate a stored
+PaymentIntent. The outcome of a `confirm` is chosen by the payment method, using
+Stripe's documented [test payment methods](https://stripe.com/docs/testing):
+
+| Payment method | Result on confirm |
+|---|---|
+| `pm_card_visa` (and unknown ids) | `succeeded` (or `requires_capture` when `capture_method=manual`) |
+| `pm_card_authenticationRequired` | `requires_action` (with a `next_action`) |
+| `pm_card_chargeDeclined` | `requires_payment_method` (with a `last_payment_error`) |
+
+### Events
+
+Transitions queue Stripe webhook-event envelopes; nothing is delivered
+automatically. Drain them when your test is ready — this is what makes event
+ordering and timing deterministic (no sleeps):
+
+| Transition | Events queued |
+|---|---|
+| create | `payment_intent.created` |
+| confirm / capture → succeeded | `charge.succeeded`, `payment_intent.succeeded` |
+| confirm with manual capture | `payment_intent.amount_capturable_updated` |
+| confirm → declined | `charge.failed`, `payment_intent.payment_failed` |
+| confirm → 3DS | `payment_intent.requires_action` |
+| cancel | `payment_intent.canceled` |
+
+### Control endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/_mock/payment_intents` | Seed a PaymentIntent. The body is a JSON object of overrides, deep-merged onto a spec-correct base (e.g. `{"id":"pi_x","amount":5530,"status":"requires_action"}`). |
+| `POST /v1/_mock/payment_intents/{id}/emit?type=...` | Queue an event wrapping the current state of a stored PaymentIntent (type derived from status when omitted). |
+| `GET /v1/_mock/events` | Drain queued events (FIFO) for the session. |
+| `POST /v1/_mock/reset` | Clear all state for the session. |
+
+Settled PaymentIntents get a real `Charge` (wired to `latest_charge`),
+retrievable with `GET /v1/charges/{id}`.
+
+### Example
+
+```sh
+AUTH='Authorization: Bearer sk_test_123'
+
+# Seed a PaymentIntent exactly as the test needs it.
+curl -s -X POST localhost:12111/v1/_mock/payment_intents -H "$AUTH" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"pi_test","amount":5530,"currency":"usd","status":"requires_confirmation"}'
+
+# Confirm it with a 3DS test card -> status requires_action.
+curl -s -X POST localhost:12111/v1/payment_intents/pi_test/confirm -H "$AUTH" \
+  -d 'payment_method=pm_card_authenticationRequired'
+
+# Drain the queued events when ready -> payment_intent.requires_action.
+curl -s localhost:12111/v1/_mock/events -H "$AUTH"
+
+# Reset between tests.
+curl -s -X POST localhost:12111/v1/_mock/reset -H "$AUTH"
 ```
 
 ## Development
