@@ -356,7 +356,7 @@ func (s *StubServer) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Stateful resources (currently PaymentIntents) are handled beside the
 	// generic generator: seeded or created objects move through a real state
 	// machine across requests. Falls through when not applicable.
-	if s.maybeHandleStatefulPaymentIntent(w, r, start, route, pathParams, requestData) {
+	if s.maybeHandleStatefulRequest(w, r, start, route, pathParams, requestData) {
 		return
 	}
 

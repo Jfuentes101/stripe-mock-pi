@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,14 +61,29 @@ var paymentIntentActions = []string{"confirm", "capture", "cancel"}
 // the generic spec-driven generator.
 //
 // It runs after request validation, so requestData is parsed, coerced, and valid.
-func (s *StubServer) maybeHandleStatefulPaymentIntent(w http.ResponseWriter, r *http.Request,
+func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.Request,
 	start time.Time, route *stubServerRoute, pathParams *PathParamsMap,
 	requestData map[string]interface{}) bool {
 
-	if s.routeResourceID(route) != paymentIntentResourceID {
+	resourceID := s.routeResourceID(route)
+	session := sessionID(r)
+
+	// Charges are created as a side effect of PaymentIntent transitions; we only
+	// serve retrieves of them from the store. Everything else uses the generic
+	// generator.
+	if resourceID == chargeResourceID {
+		if r.Method == http.MethodGet && pathParams != nil && pathParams.PrimaryID != nil {
+			if charge, ok := s.store.getCharge(session, *pathParams.PrimaryID); ok {
+				writeResponse(w, r, start, http.StatusOK, charge)
+				return true
+			}
+		}
 		return false
 	}
-	session := sessionID(r)
+
+	if resourceID != paymentIntentResourceID {
+		return false
+	}
 
 	switch {
 	// Retrieve: serve a stored object if we have one.
@@ -104,12 +120,15 @@ func (s *StubServer) maybeHandleStatefulPaymentIntent(w http.ResponseWriter, r *
 		switch paymentIntentActionFromPath(r.URL.Path) {
 		case "confirm":
 			applyConfirm(pi, requestData)
+			s.recordPaymentIntentTransition(session, pi, false)
 		case "capture":
 			applyCapture(pi, requestData)
+			s.recordPaymentIntentTransition(session, pi, false)
 		case "cancel":
 			applyCancel(pi, requestData)
+			s.recordPaymentIntentTransition(session, pi, false)
 		default:
-			applyUpdate(pi, requestData)
+			applyUpdate(pi, requestData) // a plain update emits no event
 		}
 
 		s.store.putPaymentIntent(session, id, pi)
@@ -148,6 +167,7 @@ func (s *StubServer) createPaymentIntent(session string, params map[string]inter
 		setStatus(pi, "requires_payment_method")
 	}
 
+	s.recordPaymentIntentTransition(session, pi, true)
 	s.store.putPaymentIntent(session, id, pi)
 	return pi, nil
 }
@@ -190,7 +210,6 @@ func settlePaymentIntent(pi, params map[string]interface{}) {
 
 	setStatus(pi, "succeeded")
 	pi["amount_received"] = pi["amount"]
-	ensureLatestCharge(pi)
 }
 
 // applyCapture captures a requires_capture PaymentIntent, settling it to succeeded.
@@ -202,7 +221,6 @@ func applyCapture(pi, params map[string]interface{}) {
 	} else {
 		pi["amount_received"] = pi["amount"]
 	}
-	ensureLatestCharge(pi)
 }
 
 // applyCancel cancels a PaymentIntent.
@@ -270,12 +288,157 @@ func setStatus(pi map[string]interface{}, status string) {
 	pi["status"] = status
 }
 
-// ensureLatestCharge assigns a charge id to a settled PaymentIntent if it doesn't
-// have one. A full Charge object is modeled in a later phase.
-func ensureLatestCharge(pi map[string]interface{}) {
-	if getString(pi, "latest_charge") == "" {
-		pi["latest_charge"] = randomID("ch")
+//
+// Events + Charge model
+//
+// Transitions enqueue webhook-event envelopes (and create Charge objects) into
+// the session store. Nothing is delivered automatically — the test drains the
+// queue via GET /v1/_mock/events when it's ready, which is what makes event
+// timing deterministic.
+
+// recordPaymentIntentTransition enqueues the events (and builds the Charge) that
+// correspond to a PaymentIntent's current status. isCreate adds a
+// payment_intent.created event ahead of any settlement events.
+func (s *StubServer) recordPaymentIntentTransition(session string, pi map[string]interface{}, isCreate bool) {
+	if isCreate {
+		s.enqueuePIEvent(session, pi, "payment_intent.created")
 	}
+
+	switch getString(pi, "status") {
+	case "succeeded":
+		charge := s.ensureChargeForPI(session, pi, "succeeded", true)
+		s.enqueueChargeEvent(session, charge, "charge.succeeded")
+		s.enqueuePIEvent(session, pi, "payment_intent.succeeded")
+	case "requires_capture":
+		// Funds are authorized but not captured yet: a charge exists, uncaptured.
+		s.ensureChargeForPI(session, pi, "succeeded", false)
+		s.enqueuePIEvent(session, pi, "payment_intent.amount_capturable_updated")
+	case "requires_action":
+		s.enqueuePIEvent(session, pi, "payment_intent.requires_action")
+	case "processing":
+		s.enqueuePIEvent(session, pi, "payment_intent.processing")
+	case "requires_payment_method":
+		// Only a confirm-time decline (which sets last_payment_error) is a
+		// failure; the same status at creation is just the initial state.
+		if pi["last_payment_error"] != nil {
+			charge := s.ensureChargeForPI(session, pi, "failed", false)
+			s.enqueueChargeEvent(session, charge, "charge.failed")
+			s.enqueuePIEvent(session, pi, "payment_intent.payment_failed")
+		}
+	case "canceled":
+		s.enqueuePIEvent(session, pi, "payment_intent.canceled")
+	}
+}
+
+// ensureChargeForPI creates or updates the Charge backing a PaymentIntent,
+// reusing the PI's latest_charge id when present so capture mutates the same
+// object. The Charge is built on a spec-correct base and stored in the session.
+func (s *StubServer) ensureChargeForPI(session string, pi map[string]interface{}, status string, captured bool) map[string]interface{} {
+	id := getString(pi, "latest_charge")
+
+	var charge map[string]interface{}
+	if id != "" {
+		if existing, ok := s.store.getCharge(session, id); ok {
+			charge = existing
+		}
+	}
+	if charge == nil {
+		base, err := s.generateResourceBase(chargeResourceID)
+		if err != nil || base == nil {
+			base = map[string]interface{}{}
+		}
+		charge = base
+		if id == "" {
+			id = randomID("ch")
+		}
+		charge["id"] = id
+		pi["latest_charge"] = id
+	}
+
+	charge["object"] = "charge"
+	charge["amount"] = pi["amount"]
+	charge["currency"] = pi["currency"]
+	charge["payment_intent"] = getString(pi, "id")
+	if pm := pi["payment_method"]; pm != nil {
+		charge["payment_method"] = pm
+	}
+	charge["status"] = status
+	charge["captured"] = captured
+	charge["paid"] = status == "succeeded"
+	if captured {
+		charge["amount_captured"] = pi["amount"]
+	} else {
+		charge["amount_captured"] = 0
+	}
+
+	s.store.putCharge(session, id, charge)
+	return charge
+}
+
+func (s *StubServer) enqueuePIEvent(session string, pi map[string]interface{}, eventType string) {
+	s.store.enqueueEvent(session, s.buildEvent(eventType, pi))
+}
+
+func (s *StubServer) enqueueChargeEvent(session string, charge map[string]interface{}, eventType string) {
+	s.store.enqueueEvent(session, s.buildEvent(eventType, charge))
+}
+
+// buildEvent wraps an object in a Stripe webhook-event envelope. The object is
+// deep-copied so the event captures the state at emit time, not whatever the
+// stored object mutates into later.
+func (s *StubServer) buildEvent(eventType string, object map[string]interface{}) map[string]interface{} {
+	apiVersion := ""
+	if s.spec != nil && s.spec.Info != nil {
+		apiVersion = s.spec.Info.Version
+	}
+	return map[string]interface{}{
+		"id":               randomID("evt"),
+		"object":           "event",
+		"api_version":      apiVersion,
+		"created":          time.Now().Unix(),
+		"livemode":         false,
+		"pending_webhooks": 0,
+		"type":             eventType,
+		"request": map[string]interface{}{
+			"id":              nil,
+			"idempotency_key": nil,
+		},
+		"data": map[string]interface{}{
+			"object": deepCopyMap(object),
+		},
+	}
+}
+
+// deepCopyMap returns a JSON-faithful deep copy of a map.
+func deepCopyMap(m map[string]interface{}) map[string]interface{} {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return m
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return m
+	}
+	return out
+}
+
+// paymentIntentStatusEvents maps a PaymentIntent status to the event type emitted
+// when /v1/_mock/payment_intents/:id/emit is called without an explicit type.
+var paymentIntentStatusEvents = map[string]string{
+	"succeeded":               "payment_intent.succeeded",
+	"requires_action":         "payment_intent.requires_action",
+	"requires_payment_method": "payment_intent.payment_failed",
+	"requires_capture":        "payment_intent.amount_capturable_updated",
+	"requires_confirmation":   "payment_intent.created",
+	"processing":              "payment_intent.processing",
+	"canceled":                "payment_intent.canceled",
+}
+
+func eventTypeForPaymentIntentStatus(status string) string {
+	if eventType, ok := paymentIntentStatusEvents[status]; ok {
+		return eventType
+	}
+	return "payment_intent.created"
 }
 
 func declineError() map[string]interface{} {

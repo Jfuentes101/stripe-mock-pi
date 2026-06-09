@@ -26,15 +26,21 @@ const mockSessionHeader = "X-Stripe-Mock-Session"
 // defaultSessionID is used when a request carries no usable session identifier.
 const defaultSessionID = "default"
 
-// sessionStore holds the stateful resources for a single mock session.
+// sessionStore holds the stateful resources and queued events for a single mock
+// session.
 type sessionStore struct {
-	// paymentIntents maps a PaymentIntent id to its stored JSON object.
-	paymentIntents map[string]map[string]interface{}
+	// resources is keyed by resource id (e.g. "payment_intent", "charge") and
+	// then by object id, holding the stored JSON object.
+	resources map[string]map[string]map[string]interface{}
+
+	// events is a FIFO queue of webhook-event envelopes produced by state
+	// transitions, drained on demand by the test.
+	events []map[string]interface{}
 }
 
 func newSessionStore() *sessionStore {
 	return &sessionStore{
-		paymentIntents: make(map[string]map[string]interface{}),
+		resources: make(map[string]map[string]map[string]interface{}),
 	}
 }
 
@@ -67,23 +73,75 @@ func (s *statefulStore) reset(sessionID string) {
 	delete(s.sessions, sessionID)
 }
 
-// putPaymentIntent stores (or replaces) a PaymentIntent in the session.
-func (s *statefulStore) putPaymentIntent(sessionID, id string, obj map[string]interface{}) {
+// putResource stores (or replaces) a resource object in the session.
+func (s *statefulStore) putResource(session, resourceID, id string, obj map[string]interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ensureSession(sessionID).paymentIntents[id] = obj
+	sess := s.ensureSession(session)
+	byID, ok := sess.resources[resourceID]
+	if !ok {
+		byID = make(map[string]map[string]interface{})
+		sess.resources[resourceID] = byID
+	}
+	byID[id] = obj
 }
 
-// getPaymentIntent returns a stored PaymentIntent and whether it existed.
-func (s *statefulStore) getPaymentIntent(sessionID, id string) (map[string]interface{}, bool) {
+// getResource returns a stored resource object and whether it existed.
+func (s *statefulStore) getResource(session, resourceID, id string) (map[string]interface{}, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	sess, ok := s.sessions[sessionID]
+	sess, ok := s.sessions[session]
 	if !ok {
 		return nil, false
 	}
-	obj, ok := sess.paymentIntents[id]
+	byID, ok := sess.resources[resourceID]
+	if !ok {
+		return nil, false
+	}
+	obj, ok := byID[id]
 	return obj, ok
+}
+
+// enqueueEvent appends a webhook-event envelope to the session's queue.
+func (s *statefulStore) enqueueEvent(session string, event map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.ensureSession(session)
+	sess.events = append(sess.events, event)
+}
+
+// drainEvents returns the session's queued events in FIFO order and clears the
+// queue. Returns an empty slice when there's nothing queued.
+func (s *statefulStore) drainEvents(session string) []map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[session]
+	if !ok || len(sess.events) == 0 {
+		return []map[string]interface{}{}
+	}
+	events := sess.events
+	sess.events = nil
+	return events
+}
+
+//
+// Resource-specific convenience wrappers.
+//
+
+func (s *statefulStore) putPaymentIntent(session, id string, obj map[string]interface{}) {
+	s.putResource(session, paymentIntentResourceID, id, obj)
+}
+
+func (s *statefulStore) getPaymentIntent(session, id string) (map[string]interface{}, bool) {
+	return s.getResource(session, paymentIntentResourceID, id)
+}
+
+func (s *statefulStore) putCharge(session, id string, obj map[string]interface{}) {
+	s.putResource(session, chargeResourceID, id, obj)
+}
+
+func (s *statefulStore) getCharge(session, id string) (map[string]interface{}, bool) {
+	return s.getResource(session, chargeResourceID, id)
 }
 
 // sessionID derives a mock-session identifier from a request. An explicit

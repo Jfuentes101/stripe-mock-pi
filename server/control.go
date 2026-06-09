@@ -20,9 +20,10 @@ import (
 // mockControlPrefix namespaces every test-control endpoint.
 const mockControlPrefix = "/v1/_mock/"
 
-// paymentIntentResourceID is the OpenAPI `x-resourceId` of a PaymentIntent. It's
-// both the key into the spec's component schemas and the fixtures map.
+// paymentIntentResourceID and chargeResourceID are OpenAPI `x-resourceId`s: keys
+// into both the spec's component schemas and the fixtures map.
 const paymentIntentResourceID = "payment_intent"
+const chargeResourceID = "charge"
 
 // isControlRequest reports whether a request targets the test-control plane.
 func isControlRequest(r *http.Request) bool {
@@ -41,6 +42,19 @@ func (s *StubServer) handleControlRequest(w http.ResponseWriter, r *http.Request
 
 	case endpoint == "payment_intents" && r.Method == http.MethodPost:
 		s.handleSeedPaymentIntent(w, r, start, session)
+
+	case endpoint == "events" && r.Method == http.MethodGet:
+		// Drain queued events in FIFO order. This is the test's deterministic
+		// "deliver now" knob — events accumulate as the app drives the API and
+		// are handed over only when the test asks.
+		events := s.store.drainEvents(session)
+		writeResponse(w, r, start, http.StatusOK, map[string]interface{}{
+			"object": "list",
+			"data":   events,
+		})
+
+	case r.Method == http.MethodPost && isPaymentIntentEmitEndpoint(endpoint):
+		s.handleEmitPaymentIntentEvent(w, r, start, session, paymentIntentEmitID(endpoint))
 
 	default:
 		message := fmt.Sprintf("Unknown mock control endpoint (%s: %s)", r.Method, r.URL.Path)
@@ -80,6 +94,45 @@ func (s *StubServer) handleSeedPaymentIntent(w http.ResponseWriter, r *http.Requ
 
 	s.store.putPaymentIntent(session, id, obj)
 	writeResponse(w, r, start, http.StatusOK, obj)
+}
+
+// isPaymentIntentEmitEndpoint reports whether a control endpoint path is of the
+// form "payment_intents/{id}/emit".
+func isPaymentIntentEmitEndpoint(endpoint string) bool {
+	parts := strings.Split(endpoint, "/")
+	return len(parts) == 3 && parts[0] == "payment_intents" && parts[2] == "emit"
+}
+
+// paymentIntentEmitID extracts {id} from "payment_intents/{id}/emit".
+func paymentIntentEmitID(endpoint string) string {
+	parts := strings.Split(endpoint, "/")
+	if len(parts) == 3 {
+		return parts[1]
+	}
+	return ""
+}
+
+// handleEmitPaymentIntentEvent enqueues a webhook event wrapping the current
+// state of a stored PaymentIntent. The event type comes from the `type` query
+// param, or is derived from the PaymentIntent's status when omitted. This lets a
+// test seed an exact object and then emit the matching event on demand.
+func (s *StubServer) handleEmitPaymentIntentEvent(w http.ResponseWriter, r *http.Request, start time.Time, session, id string) {
+	pi, ok := s.store.getPaymentIntent(session, id)
+	if !ok {
+		message := fmt.Sprintf("No seeded PaymentIntent %q in this session to emit an event for", id)
+		writeResponse(w, r, start, http.StatusNotFound,
+			createStripeError(typeInvalidRequestError, message))
+		return
+	}
+
+	eventType := r.URL.Query().Get("type")
+	if eventType == "" {
+		eventType = eventTypeForPaymentIntentStatus(getString(pi, "status"))
+	}
+
+	event := s.buildEvent(eventType, pi)
+	s.store.enqueueEvent(session, event)
+	writeResponse(w, r, start, http.StatusOK, event)
 }
 
 // generateResourceBase produces a spec-correct base object for a resource by its
