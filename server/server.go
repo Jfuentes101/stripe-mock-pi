@@ -299,14 +299,6 @@ func (s *StubServer) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If a test has seeded this stateful resource for the current session, serve
-	// the stored object directly, bypassing the generic spec-driven generator.
-	if stored, ok := s.maybeStatefulResponse(r, route, pathParams); ok {
-		w.Header().Set("Content-Type", "application/json")
-		writeResponse(w, r, start, http.StatusOK, stored)
-		return
-	}
-
 	response, ok := route.operation.Responses["200"]
 	if !ok {
 		fmt.Printf("Couldn't find 200 response in spec\n")
@@ -358,6 +350,13 @@ func (s *StubServer) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	requestData, stripeError := validateAndCoerceRequest(r, route, requestData)
 	if stripeError != nil {
 		writeResponse(w, r, start, http.StatusBadRequest, stripeError)
+		return
+	}
+
+	// Stateful resources (currently PaymentIntents) are handled beside the
+	// generic generator: seeded or created objects move through a real state
+	// machine across requests. Falls through when not applicable.
+	if s.maybeHandleStatefulPaymentIntent(w, r, start, route, pathParams, requestData) {
 		return
 	}
 
