@@ -126,24 +126,6 @@ func decodeJSONObject(body io.Reader) (map[string]interface{}, error) {
 	return result, nil
 }
 
-//
-// Stateful response interception (read side).
-//
-
-// maybeStatefulResponse returns a stored stateful resource matching the request,
-// if one exists for this session. Phase 1 handles GET retrieves of seeded
-// PaymentIntents; other verbs and resources fall through to the generic
-// spec-driven generator.
-func (s *StubServer) maybeStatefulResponse(r *http.Request, route *stubServerRoute, pathParams *PathParamsMap) (interface{}, bool) {
-	if r.Method != http.MethodGet || pathParams == nil || pathParams.PrimaryID == nil {
-		return nil, false
-	}
-	if s.routeResourceID(route) != paymentIntentResourceID {
-		return nil, false
-	}
-	return s.store.getPaymentIntent(sessionID(r), *pathParams.PrimaryID)
-}
-
 // routeResourceID resolves the `x-resourceId` of a route's 200 JSON response
 // schema, following a top-level $ref into the component schemas. Returns "" when
 // the route has no identifiable resource (e.g. list or binary responses).
