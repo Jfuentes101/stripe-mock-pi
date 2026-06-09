@@ -178,8 +178,12 @@ clears the current session — call it between tests.
 ### Driving the lifecycle
 
 `create`, `confirm`, `capture`, `cancel`, and `update` mutate a stored
-PaymentIntent. The outcome of a `confirm` is chosen by the payment method, using
-Stripe's documented [test payment methods](https://stripe.com/docs/testing):
+PaymentIntent. A POST that references an id the mock has never seen (say, one
+from your app's own DB fixtures, or created before the session opted in)
+**adopts** it: a spec-correct base is built for that id and the lifecycle
+continues from there — just like real Stripe, which would know the id. The
+outcome of a `confirm` is chosen by the payment method, using Stripe's
+documented [test payment methods](https://stripe.com/docs/testing):
 
 | Payment method | Result on confirm |
 |---|---|
@@ -208,6 +212,7 @@ ordering and timing deterministic (no sleeps):
 |---|---|
 | `POST /v1/_mock/config` | Opt the session into the stateful layer (`{"stateful_payment_intents": true}`; defaults to true when the body is empty). |
 | `POST /v1/_mock/payment_intents` | Seed a PaymentIntent. The body is a JSON object of overrides, deep-merged onto a spec-correct base (e.g. `{"id":"pi_x","amount":5530,"status":"requires_action"}`). Also opts the session in. |
+| `GET /v1/_mock/payment_intents` | List the session's stored PaymentIntents — lets a test discover which intent the app created or updated, e.g. to then drive its confirm. |
 | `POST /v1/_mock/payment_intents/{id}/emit?type=...` | Queue an event wrapping the current state of a stored PaymentIntent (type derived from status when omitted). |
 | `GET /v1/_mock/events` | Drain queued events (FIFO) for the session. |
 | `POST /v1/_mock/reset` | Clear all state for the session. |

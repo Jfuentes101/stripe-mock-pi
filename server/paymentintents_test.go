@@ -108,6 +108,45 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "canceled", pi["status"])
 	})
 
+	t.Run("POST to an unknown id adopts it (update then confirm settles)", func(t *testing.T) {
+		key := "sk_test_adopt"
+		// Mirrors the app flow: it updates a PaymentIntent whose id comes from
+		// its own DB (never seen by the mock), then the browser-side confirm is
+		// simulated with a confirm call.
+		status, pi := postForm(server, "/v1/payment_intents/pi_from_db_fixture",
+			"amount=28030&currency=usd&payment_method=card_saved_123", key)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, "pi_from_db_fixture", pi["id"])
+		assert.Equal(t, float64(28030), pi["amount"])
+		assert.Equal(t, "requires_confirmation", pi["status"])
+
+		status, pi = postForm(server, "/v1/payment_intents/pi_from_db_fixture/confirm", "", key)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, "succeeded", pi["status"])
+		assert.Equal(t, float64(28030), pi["amount_received"])
+
+		// The settled charge carries the adopted PaymentIntent's data.
+		chargeID := pi["latest_charge"].(string)
+		_, charge := getResource(server, "/v1/charges/"+chargeID, key)
+		assert.Equal(t, "pi_from_db_fixture", charge["payment_intent"])
+		assert.Equal(t, float64(28030), charge["amount"])
+	})
+
+	t.Run("control plane lists the session's PaymentIntents", func(t *testing.T) {
+		key := "sk_test_list"
+		seedPI(server, `{"id":"pi_l1","amount":1}`, key)
+		seedPI(server, `{"id":"pi_l2","amount":2}`, key)
+
+		_, body := getResource(server, "/v1/_mock/payment_intents", key)
+		data := body["data"].([]interface{})
+		assert.Len(t, data, 2)
+		ids := []string{
+			data[0].(map[string]interface{})["id"].(string),
+			data[1].(map[string]interface{})["id"].(string),
+		}
+		assert.Equal(t, []string{"pi_l1", "pi_l2"}, ids)
+	})
+
 	t.Run("bare POST updates without changing status", func(t *testing.T) {
 		key := "sk_test_c8"
 		seedPI(server, `{"id":"pi_upd","status":"requires_confirmation","amount":5000}`, key)
