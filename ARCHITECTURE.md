@@ -262,11 +262,17 @@ is what rejects unknown/mistyped params per request.
 2. After `validateAndCoerceRequest` — `maybeHandleStatefulRequest` serves/mutates
    stored PaymentIntents and Charges; returns `false` to fall through.
 
+**Opt-in (default off):** `maybeHandleStatefulRequest` returns early unless the
+session has opted in — via `POST /v1/_mock/config`, by seeding, or an
+`X-Stripe-Mock-Stateful` header. So the mock is byte-for-byte the generic,
+stateless mock for every session that doesn't ask, which keeps existing test
+suites unaffected when this binary replaces upstream.
+
 **Session store (`statefulStore`):** `map[sessionID]*sessionStore`, mutex-guarded.
-Each session holds resources keyed by `x-resourceId` → id → object, plus a FIFO
-event queue. The session id comes from the API key (or an explicit
-`X-Stripe-Mock-Session` header), so parallel test workers stay isolated; `reset`
-drops a session.
+Each session holds resources keyed by `x-resourceId` → id → object, a FIFO event
+queue, and a `statefulEnabled` flag. The session id comes from the API key (or an
+explicit `X-Stripe-Mock-Session` header), so parallel test workers stay isolated;
+`reset` drops a session.
 
 **Seeding (`generateResourceBase` + `mergeMap`):** seeds reuse the `DataGenerator`
 to build a spec-correct base object, then deep-merge caller overrides — seeded
@@ -283,7 +289,8 @@ command, which is what makes event ordering and timing deterministic (no sleeps)
 
 | Control endpoint | Handler |
 |---|---|
-| `POST /v1/_mock/payment_intents` | `handleSeedPaymentIntent` (base + overrides) |
+| `POST /v1/_mock/config` | `handleConfig` (opt the session into the stateful layer) |
+| `POST /v1/_mock/payment_intents` | `handleSeedPaymentIntent` (base + overrides; also opts in) |
 | `POST /v1/_mock/payment_intents/{id}/emit` | `handleEmitPaymentIntentEvent` |
 | `GET /v1/_mock/events` | drain via `statefulStore.drainEvents` |
 | `POST /v1/_mock/reset` | `statefulStore.reset` |

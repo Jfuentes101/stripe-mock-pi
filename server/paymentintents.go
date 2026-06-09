@@ -65,8 +65,20 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 	start time.Time, route *stubServerRoute, pathParams *PathParamsMap,
 	requestData map[string]interface{}) bool {
 
-	resourceID := s.routeResourceID(route)
 	session := sessionID(r)
+
+	// The stateful layer is opt-in per session: an `X-Stripe-Mock-Stateful`
+	// header enables it on the fly, otherwise the session must have opted in via
+	// POST /v1/_mock/config (or by seeding). When off, fall through so the mock
+	// behaves exactly like upstream.
+	if r.Header.Get(mockStatefulHeader) != "" {
+		s.store.setStatefulEnabled(session, true)
+	}
+	if !s.store.statefulEnabled(session) {
+		return false
+	}
+
+	resourceID := s.routeResourceID(route)
 
 	// Charges are created as a side effect of PaymentIntent transitions; we only
 	// serve retrieves of them from the store. Everything else uses the generic
