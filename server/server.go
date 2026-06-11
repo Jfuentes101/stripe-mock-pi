@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lestrrat-go/jsval"
@@ -207,6 +208,7 @@ type StubServer struct {
 	routes             map[spec.HTTPVerb][]stubServerRoute
 	spec               *spec.Spec
 	store              *statefulStore
+	statefulActionMu   sync.Mutex
 	strictVersionCheck bool
 	verbose            bool
 }

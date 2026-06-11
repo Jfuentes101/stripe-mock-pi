@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 
@@ -130,6 +131,38 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		// The intent must be left untouched.
 		_, pi := getResource(server, "/v1/payment_intents/pi_slow", key)
 		assert.Equal(t, "requires_payment_method", pi["status"])
+	})
+
+	t.Run("concurrent captures: exactly one wins", func(t *testing.T) {
+		key := "sk_test_c11"
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true&capture_method=manual", key)
+		id := pi["id"].(string)
+
+		results := make(chan int, 2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				status, _ := postForm(server, "/v1/payment_intents/"+id+"/capture", "", key)
+				results <- status
+			}()
+		}
+		got := []int{<-results, <-results}
+		sort.Ints(got)
+		assert.Equal(t, []int{http.StatusOK, http.StatusBadRequest}, got,
+			"second capture must be rejected, not settled twice")
+	})
+
+	t.Run("unsimulated action endpoints fall through to the generic generator", func(t *testing.T) {
+		key := "sk_test_c12"
+		seedPI(server, `{"id":"pi_inc","status":"requires_capture","amount":1000}`, key)
+
+		status, _ := postForm(server, "/v1/payment_intents/pi_inc/increment_authorization", "amount=1500", key)
+		assert.Equal(t, http.StatusOK, status)
+
+		// The stored intent must be untouched — neither updated nor re-created.
+		_, pi := getResource(server, "/v1/payment_intents/pi_inc", key)
+		assert.Equal(t, float64(1000), pi["amount"])
+		assert.Equal(t, "requires_capture", pi["status"])
 	})
 
 	t.Run("cancel moves to canceled", func(t *testing.T) {
