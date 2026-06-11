@@ -144,6 +144,12 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 
 		status, _ = postForm(server, "/v1/payment_intents", "amount=100&currency=usd&confirm=true", key)
 		assert.Equal(t, http.StatusBadRequest, status, "create+confirm without a payment method must fail too")
+
+		// Inline payment_method_data is a documented alternative and must pass.
+		status, pi := postForm(server, "/v1/payment_intents",
+			"amount=100&currency=usd&confirm=true&payment_method_data[type]=cashapp", key)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, "succeeded", pi["status"])
 	})
 
 	t.Run("concurrent captures: exactly one wins", func(t *testing.T) {
