@@ -145,11 +145,14 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		status, _ = postForm(server, "/v1/payment_intents", "amount=100&currency=usd&confirm=true", key)
 		assert.Equal(t, http.StatusBadRequest, status, "create+confirm without a payment method must fail too")
 
-		// Inline payment_method_data is a documented alternative and must pass.
+		// Inline payment_method_data is a documented alternative and must pass,
+		// attaching a freshly created payment method.
 		status, pi := postForm(server, "/v1/payment_intents",
 			"amount=100&currency=usd&confirm=true&payment_method_data[type]=cashapp", key)
 		assert.Equal(t, http.StatusOK, status)
 		assert.Equal(t, "succeeded", pi["status"])
+		assert.True(t, strings.HasPrefix(pi["payment_method"].(string), "pm_"),
+			"inline data must attach a payment method")
 	})
 
 	t.Run("retry after decline gets a fresh charge", func(t *testing.T) {
@@ -233,13 +236,17 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "requires_capture", pi["status"])
 	})
 
-	t.Run("cancel moves to canceled", func(t *testing.T) {
+	t.Run("cancel moves to canceled and releases the capturable amount", func(t *testing.T) {
 		key := "sk_test_c7"
-		seedPI(server, `{"id":"pi_cxl","status":"requires_capture","amount":4000}`, key)
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=4000&currency=usd&payment_method=pm_card_visa&confirm=true&capture_method=manual", key)
+		id := pi["id"].(string)
+		assert.Equal(t, float64(4000), pi["amount_capturable"])
 
-		status, pi := postForm(server, "/v1/payment_intents/pi_cxl/cancel", "", key)
+		status, canceled := postForm(server, "/v1/payment_intents/"+id+"/cancel", "", key)
 		assert.Equal(t, http.StatusOK, status)
-		assert.Equal(t, "canceled", pi["status"])
+		assert.Equal(t, "canceled", canceled["status"])
+		assert.Equal(t, float64(0), canceled["amount_capturable"], "authorization released")
 	})
 
 	t.Run("POST to an unknown id adopts it (update then confirm settles)", func(t *testing.T) {

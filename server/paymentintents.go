@@ -290,6 +290,9 @@ func (s *StubServer) createPaymentIntent(session string, params map[string]inter
 func applyConfirm(pi, params map[string]interface{}) {
 	if pm := getString(params, "payment_method"); pm != "" {
 		pi["payment_method"] = pm
+	} else if _, ok := params["payment_method_data"]; ok && getString(pi, "payment_method") == "" {
+		// Inline payment_method_data creates and attaches a fresh PaymentMethod.
+		pi["payment_method"] = randomID("pm")
 	}
 
 	switch outcomeForPaymentMethod(getString(pi, "payment_method")) {
@@ -343,6 +346,7 @@ func applyCapture(pi, params map[string]interface{}) {
 func applyCancel(pi, params map[string]interface{}) {
 	setStatus(pi, "canceled")
 	pi["next_action"] = nil
+	pi["amount_capturable"] = 0
 	if reason := getString(params, "cancellation_reason"); reason != "" {
 		pi["cancellation_reason"] = reason
 	}
