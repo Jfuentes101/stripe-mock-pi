@@ -153,6 +153,15 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "succeeded", pi["status"])
 		assert.True(t, strings.HasPrefix(pi["payment_method"].(string), "pm_"),
 			"inline data must attach a payment method")
+
+		// Without confirm, inline data still attaches: the intent is confirmable.
+		status, pi = postForm(server, "/v1/payment_intents",
+			"amount=100&currency=usd&payment_method_data[type]=cashapp", key)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, "requires_confirmation", pi["status"])
+		status, pi = postForm(server, "/v1/payment_intents/"+pi["id"].(string)+"/confirm", "", key)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, "succeeded", pi["status"])
 	})
 
 	t.Run("retry after decline gets a fresh charge", func(t *testing.T) {
