@@ -60,12 +60,29 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		_, pi := postForm(server, "/v1/payment_intents",
 			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true&capture_method=manual", key)
 		assert.Equal(t, "requires_capture", pi["status"])
+		assert.Equal(t, float64(1000), pi["amount_capturable"], "authorized amount is capturable")
 		id := pi["id"].(string)
 
 		status, captured := postForm(server, "/v1/payment_intents/"+id+"/capture", "", key)
 		assert.Equal(t, http.StatusOK, status)
 		assert.Equal(t, "succeeded", captured["status"])
 		assert.Equal(t, float64(1000), captured["amount_received"])
+		assert.Equal(t, float64(0), captured["amount_capturable"], "nothing left to capture")
+	})
+
+	t.Run("partial capture is reflected on the intent and its charge", func(t *testing.T) {
+		key := "sk_test_c10"
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true&capture_method=manual", key)
+		id := pi["id"].(string)
+
+		_, captured := postForm(server, "/v1/payment_intents/"+id+"/capture", "amount_to_capture=600", key)
+		assert.Equal(t, "succeeded", captured["status"])
+		assert.Equal(t, float64(600), captured["amount_received"])
+
+		_, charge := getResource(server, "/v1/charges/"+captured["latest_charge"].(string), key)
+		assert.Equal(t, float64(1000), charge["amount"], "charge keeps the authorized amount")
+		assert.Equal(t, float64(600), charge["amount_captured"], "charge reports the captured amount")
 	})
 
 	t.Run("confirm with 3DS card requires action", func(t *testing.T) {
