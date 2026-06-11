@@ -212,6 +212,9 @@ ordering and timing deterministic (no sleeps):
 | confirm → 3DS | `payment_intent.requires_action` |
 | cancel | `payment_intent.canceled` |
 
+Known limitation: multicapture (`final_capture=false`) is not simulated — every
+capture is final.
+
 Like real Stripe, a manual-capture authorization creates the charge immediately —
 `charge.succeeded` fires at authorization time with `captured: false`, and the
 later capture fires `charge.captured` (not a second `charge.succeeded`). This is

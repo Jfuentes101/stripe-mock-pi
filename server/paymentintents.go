@@ -173,6 +173,30 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		return false
 	}
 
+	// Filtered charge list: code commonly lists charges by payment_intent
+	// (`GET /v1/charges?payment_intent=...`). The list route carries no
+	// x-resourceId, so handle it before the resource dispatch. Only intercept
+	// when the stateful flow actually created matching charges.
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1/charges") {
+		if piID := getString(requestData, "payment_intent"); piID != "" {
+			matches := []map[string]interface{}{}
+			for _, charge := range s.store.listResources(session, chargeResourceID) {
+				if getString(charge, "payment_intent") == piID {
+					matches = append(matches, charge)
+				}
+			}
+			if len(matches) > 0 {
+				writeResponse(w, r, start, http.StatusOK, map[string]interface{}{
+					"object":   "list",
+					"data":     matches,
+					"has_more": false,
+					"url":      "/v1/charges",
+				})
+				return true
+			}
+		}
+	}
+
 	resourceID := s.routeResourceID(route)
 
 	// Charges are created as a side effect of PaymentIntent transitions; we only
