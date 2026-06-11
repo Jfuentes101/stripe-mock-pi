@@ -54,6 +54,31 @@ func confirmHasPaymentMethod(pi, params map[string]interface{}) bool {
 	return ok
 }
 
+// writePaymentIntentStateError responds with Stripe's unexpected-state error.
+func writePaymentIntentStateError(w http.ResponseWriter, r *http.Request, start time.Time, message string) {
+	writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
+		"error": map[string]interface{}{
+			"type":    typeInvalidRequestError,
+			"code":    "payment_intent_unexpected_state",
+			"message": message,
+		},
+	})
+}
+
+// numberValue normalizes the numeric types that reach us from coerced form
+// params and decoded JSON.
+func numberValue(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
+}
+
 func outcomeForPaymentMethod(paymentMethod string) pmOutcome {
 	if outcome, ok := magicPaymentMethods[paymentMethod]; ok {
 		return outcome
@@ -126,13 +151,8 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 	// generic generator.
 	case r.Method == http.MethodPost && pathParams == nil:
 		if boolParam(requestData, "confirm") && !confirmHasPaymentMethod(nil, requestData) {
-			writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
-				"error": map[string]interface{}{
-					"type":    typeInvalidRequestError,
-					"code":    "payment_intent_unexpected_state",
-					"message": "You cannot confirm this PaymentIntent because it's missing a payment method.",
-				},
-			})
+			writePaymentIntentStateError(w, r, start,
+				"You cannot confirm this PaymentIntent because it's missing a payment method.")
 			return true
 		}
 		pi, err := s.createPaymentIntent(session, requestData)
@@ -181,16 +201,16 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 
 		switch action {
 		case "confirm":
+			if status := getString(pi, "status"); status != "requires_confirmation" &&
+				status != "requires_action" && status != "requires_payment_method" {
+				writePaymentIntentStateError(w, r, start, fmt.Sprintf("This PaymentIntent could not be confirmed because it has a status of %s. Only a PaymentIntent with one of the following statuses may be confirmed: requires_confirmation, requires_action, requires_payment_method.", status))
+				return true
+			}
 			// Real Stripe refuses to confirm an intent with no payment method
 			// attached or supplied.
 			if !confirmHasPaymentMethod(pi, requestData) {
-				writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
-					"error": map[string]interface{}{
-						"type":    typeInvalidRequestError,
-						"code":    "payment_intent_unexpected_state",
-						"message": "You cannot confirm this PaymentIntent because it's missing a payment method.",
-					},
-				})
+				writePaymentIntentStateError(w, r, start,
+					"You cannot confirm this PaymentIntent because it's missing a payment method.")
 				return true
 			}
 			applyConfirm(pi, requestData)
@@ -200,22 +220,23 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 			// Anything else is rejected with payment_intent_unexpected_state —
 			// this is the behavior tests need to reproduce capture races.
 			if status := getString(pi, "status"); status != "requires_capture" {
-				message := fmt.Sprintf("This PaymentIntent could not be captured because it has a status of %s. Only a PaymentIntent with one of the following statuses may be captured: requires_capture.", status)
-				// Raw map instead of createStripeError: real Stripe includes a
-				// `code` here and the upstream ResponseError struct has no field
-				// for it.
-				writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
-					"error": map[string]interface{}{
-						"type":    typeInvalidRequestError,
-						"code":    "payment_intent_unexpected_state",
-						"message": message,
-					},
-				})
+				writePaymentIntentStateError(w, r, start, fmt.Sprintf("This PaymentIntent could not be captured because it has a status of %s. Only a PaymentIntent with one of the following statuses may be captured: requires_capture.", status))
 				return true
+			}
+			if amt, ok := numberValue(requestData["amount_to_capture"]); ok {
+				if capturable, ok := numberValue(pi["amount_capturable"]); ok && amt > capturable {
+					writePaymentIntentStateError(w, r, start,
+						"amount_to_capture must be less than or equal to the amount_capturable on the PaymentIntent.")
+					return true
+				}
 			}
 			applyCapture(pi, requestData)
 			s.recordPaymentIntentTransition(session, pi, false, true)
 		case "cancel":
+			if status := getString(pi, "status"); status == "succeeded" || status == "canceled" {
+				writePaymentIntentStateError(w, r, start, fmt.Sprintf("You cannot cancel this PaymentIntent because it has a status of %s.", status))
+				return true
+			}
 			applyCancel(pi, requestData)
 			s.recordPaymentIntentTransition(session, pi, false, false)
 		default:
