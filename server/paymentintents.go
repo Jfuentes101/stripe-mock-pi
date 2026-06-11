@@ -248,6 +248,8 @@ func settlePaymentIntent(pi, params map[string]interface{}) {
 	}
 	if captureMethod == "manual" {
 		setStatus(pi, "requires_capture")
+		// Real Stripe exposes the authorized amount as capturable until capture.
+		pi["amount_capturable"] = pi["amount"]
 		return
 	}
 
@@ -259,6 +261,7 @@ func settlePaymentIntent(pi, params map[string]interface{}) {
 func applyCapture(pi, params map[string]interface{}) {
 	setStatus(pi, "succeeded")
 	pi["next_action"] = nil
+	pi["amount_capturable"] = 0
 	if amount, ok := params["amount_to_capture"]; ok {
 		pi["amount_received"] = amount
 	} else {
@@ -336,6 +339,7 @@ func resetPaymentIntentLifecycleFields(pi map[string]interface{}) {
 	pi["last_payment_error"] = nil
 	pi["latest_charge"] = nil
 	pi["amount_received"] = 0
+	pi["amount_capturable"] = 0
 }
 
 //
@@ -433,7 +437,8 @@ func (s *StubServer) ensureChargeForPI(session string, pi map[string]interface{}
 	charge["captured"] = captured
 	charge["paid"] = status == "succeeded"
 	if captured {
-		charge["amount_captured"] = pi["amount"]
+		// amount_received already reflects amount_to_capture on partial captures.
+		charge["amount_captured"] = pi["amount_received"]
 	} else {
 		charge["amount_captured"] = 0
 	}
