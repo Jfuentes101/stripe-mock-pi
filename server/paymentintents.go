@@ -79,6 +79,18 @@ func numberValue(v interface{}) (float64, bool) {
 	return 0, false
 }
 
+// attachPaymentMethod reflects the request's payment method onto the intent,
+// minting a fresh one when supplied inline via payment_method_data.
+func attachPaymentMethod(pi, params map[string]interface{}) {
+	if pm := getString(params, "payment_method"); pm != "" {
+		pi["payment_method"] = pm
+		return
+	}
+	if _, ok := params["payment_method_data"]; ok && getString(pi, "payment_method") == "" {
+		pi["payment_method"] = randomID("pm")
+	}
+}
+
 func outcomeForPaymentMethod(paymentMethod string) pmOutcome {
 	if outcome, ok := magicPaymentMethods[paymentMethod]; ok {
 		return outcome
@@ -270,6 +282,7 @@ func (s *StubServer) createPaymentIntent(session string, params map[string]inter
 	}
 	pi["client_secret"] = id + "_secret_" + randomIDRandomPart()
 
+	attachPaymentMethod(pi, params)
 	switch {
 	case boolParam(params, "confirm"):
 		// confirm=true on create runs the same transition as a confirm call.
@@ -288,12 +301,7 @@ func (s *StubServer) createPaymentIntent(session string, params map[string]inter
 // applyConfirm moves a PaymentIntent forward on confirm, choosing the outcome
 // from its payment method (overridable by a payment_method param).
 func applyConfirm(pi, params map[string]interface{}) {
-	if pm := getString(params, "payment_method"); pm != "" {
-		pi["payment_method"] = pm
-	} else if _, ok := params["payment_method_data"]; ok && getString(pi, "payment_method") == "" {
-		// Inline payment_method_data creates and attaches a fresh PaymentMethod.
-		pi["payment_method"] = randomID("pm")
-	}
+	attachPaymentMethod(pi, params)
 
 	switch outcomeForPaymentMethod(getString(pi, "payment_method")) {
 	case outcomeRequiresAction:
