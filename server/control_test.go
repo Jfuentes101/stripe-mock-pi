@@ -3,7 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,7 +35,7 @@ func roundtrip(server *StubServer, method, url, body string, headers map[string]
 	server.HandleRequest(w, req)
 
 	resp := w.Result()
-	raw, _ := ioutil.ReadAll(resp.Body)
+	raw, _ := io.ReadAll(resp.Body)
 	var parsed map[string]interface{}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &parsed)

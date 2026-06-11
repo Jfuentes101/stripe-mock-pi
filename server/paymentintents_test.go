@@ -107,6 +107,7 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, status)
 		errInfo := body["error"].(map[string]interface{})
 		assert.Equal(t, "invalid_request_error", errInfo["type"])
+		assert.Equal(t, "payment_intent_unexpected_state", errInfo["code"])
 		assert.Contains(t, errInfo["message"].(string), "status of requires_payment_method")
 
 		// The intent must be left untouched.
