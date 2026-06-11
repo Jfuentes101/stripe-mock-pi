@@ -211,6 +211,21 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "succeeded", confirmed["status"])
 	})
 
+	t.Run("charge list filtered by payment_intent returns stored charges", func(t *testing.T) {
+		key := "sk_test_c20"
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true", key)
+
+		_, list := getResource(server, "/v1/charges?payment_intent="+pi["id"].(string), key)
+		data := list["data"].([]interface{})
+		assert.Len(t, data, 1)
+		assert.Equal(t, pi["latest_charge"], data[0].(map[string]interface{})["id"])
+
+		// No stateful match -> generic fixture list, as before.
+		_, generic := getResource(server, "/v1/charges?payment_intent=pi_unknown_xyz", key)
+		assert.Equal(t, "list", generic["object"])
+	})
+
 	t.Run("retry after decline gets a fresh charge", func(t *testing.T) {
 		key := "sk_test_c16"
 		seedPI(server, `{"id":"pi_retry","status":"requires_confirmation","amount":3000,"currency":"usd"}`, key)
