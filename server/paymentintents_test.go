@@ -152,6 +152,38 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "succeeded", pi["status"])
 	})
 
+	t.Run("terminal intents reject confirm and cancel", func(t *testing.T) {
+		key := "sk_test_c14"
+		seedPI(server, `{"id":"pi_done","status":"succeeded","payment_method":"pm_card_visa"}`, key)
+
+		status, body := postForm(server, "/v1/payment_intents/pi_done/confirm", "payment_method=pm_card_visa", key)
+		assert.Equal(t, http.StatusBadRequest, status)
+		assert.Contains(t, body["error"].(map[string]interface{})["message"].(string), "status of succeeded")
+
+		status, body = postForm(server, "/v1/payment_intents/pi_done/cancel", "", key)
+		assert.Equal(t, http.StatusBadRequest, status)
+		assert.Contains(t, body["error"].(map[string]interface{})["message"].(string), "status of succeeded")
+
+		// No duplicate webhooks were queued by the rejected calls.
+		assert.Empty(t, drainEvents(server, key))
+	})
+
+	t.Run("over-capture is rejected", func(t *testing.T) {
+		key := "sk_test_c15"
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true&capture_method=manual", key)
+		id := pi["id"].(string)
+
+		status, body := postForm(server, "/v1/payment_intents/"+id+"/capture", "amount_to_capture=1500", key)
+		assert.Equal(t, http.StatusBadRequest, status)
+		assert.Contains(t, body["error"].(map[string]interface{})["message"].(string), "amount_to_capture")
+
+		// A valid partial capture still works afterwards.
+		status, captured := postForm(server, "/v1/payment_intents/"+id+"/capture", "amount_to_capture=600", key)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, float64(600), captured["amount_received"])
+	})
+
 	t.Run("concurrent captures: exactly one wins", func(t *testing.T) {
 		key := "sk_test_c11"
 		_, pi := postForm(server, "/v1/payment_intents",
