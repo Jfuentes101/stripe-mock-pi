@@ -109,8 +109,11 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		writeResponse(w, r, start, http.StatusOK, pi)
 		return true
 
-	// Create: a POST with no primary id in the path.
-	case r.Method == http.MethodPost && (pathParams == nil || pathParams.PrimaryID == nil):
+	// Create: a POST to the bare collection endpoint (no path params at all).
+	// POSTs with params but no primary id (e.g. /{intent}/increment_authorization,
+	// whose suffix isn't a recognized action) fall out of the switch to the
+	// generic generator.
+	case r.Method == http.MethodPost && pathParams == nil:
 		pi, err := s.createPaymentIntent(session, requestData)
 		if err != nil {
 			fmt.Printf("Couldn't create stateful PaymentIntent: %v\n", err)
@@ -120,9 +123,22 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		writeResponse(w, r, start, http.StatusOK, pi)
 		return true
 
-	// Action or update on an existing PaymentIntent.
-	case r.Method == http.MethodPost:
+	// Action or update on an existing PaymentIntent. Serialized: the store is
+	// copy-on-read, so without this lock two concurrent captures could both
+	// pass the status check and settle twice.
+	case r.Method == http.MethodPost && pathParams.PrimaryID != nil:
+		s.statefulActionMu.Lock()
+		defer s.statefulActionMu.Unlock()
+
 		id := *pathParams.PrimaryID
+		action, handled := paymentIntentActionForRequest(r.URL.Path, id)
+		if !handled {
+			// An action endpoint we don't simulate (e.g. increment_authorization):
+			// leave it to the generic generator rather than misreading it as an
+			// update.
+			return false
+		}
+
 		pi, ok := s.store.getPaymentIntent(session, id)
 		if !ok {
 			// Adopt a PaymentIntent the app references but that we've never
@@ -142,7 +158,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 			setStatus(pi, "requires_confirmation")
 		}
 
-		switch paymentIntentActionFromPath(r.URL.Path) {
+		switch action {
 		case "confirm":
 			applyConfirm(pi, requestData)
 			s.recordPaymentIntentTransition(session, pi, false, false)
@@ -314,15 +330,20 @@ func copyPaymentIntentParams(pi, params map[string]interface{}) {
 	}
 }
 
-// paymentIntentActionFromPath returns the RPC action suffix of a PaymentIntent
-// path (confirm/capture/cancel), or "update" for a bare POST to the object.
-func paymentIntentActionFromPath(path string) string {
-	for _, action := range paymentIntentActions {
-		if strings.HasSuffix(path, "/"+action) {
-			return action
+// paymentIntentActionForRequest resolves what a POST to a PaymentIntent path
+// means: "" for a bare update (path ends with the id), the action name for the
+// transitions we simulate, or handled=false for action endpoints we don't
+// (those fall through to the generic generator).
+func paymentIntentActionForRequest(path, id string) (action string, handled bool) {
+	if strings.HasSuffix(path, "/"+id) {
+		return "", true
+	}
+	for _, a := range paymentIntentActions {
+		if strings.HasSuffix(path, "/"+a) {
+			return a, true
 		}
 	}
-	return "update"
+	return "", false
 }
 
 func setStatus(pi map[string]interface{}, status string) {
