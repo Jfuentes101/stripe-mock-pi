@@ -114,6 +114,16 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 	// whose suffix isn't a recognized action) fall out of the switch to the
 	// generic generator.
 	case r.Method == http.MethodPost && pathParams == nil:
+		if boolParam(requestData, "confirm") && getString(requestData, "payment_method") == "" {
+			writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
+				"error": map[string]interface{}{
+					"type":    typeInvalidRequestError,
+					"code":    "payment_intent_unexpected_state",
+					"message": "You cannot confirm this PaymentIntent because it's missing a payment method.",
+				},
+			})
+			return true
+		}
 		pi, err := s.createPaymentIntent(session, requestData)
 		if err != nil {
 			fmt.Printf("Couldn't create stateful PaymentIntent: %v\n", err)
@@ -160,6 +170,18 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 
 		switch action {
 		case "confirm":
+			// Real Stripe refuses to confirm an intent with no payment method
+			// attached or supplied.
+			if getString(requestData, "payment_method") == "" && getString(pi, "payment_method") == "" {
+				writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
+					"error": map[string]interface{}{
+						"type":    typeInvalidRequestError,
+						"code":    "payment_intent_unexpected_state",
+						"message": "You cannot confirm this PaymentIntent because it's missing a payment method.",
+					},
+				})
+				return true
+			}
 			applyConfirm(pi, requestData)
 			s.recordPaymentIntentTransition(session, pi, false, false)
 		case "capture":

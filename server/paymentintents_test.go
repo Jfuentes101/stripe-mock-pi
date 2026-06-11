@@ -133,6 +133,19 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "requires_payment_method", pi["status"])
 	})
 
+	t.Run("confirm without a payment method is rejected like real Stripe", func(t *testing.T) {
+		key := "sk_test_c13"
+		seedPI(server, `{"id":"pi_nopm","status":"requires_payment_method","payment_method":null}`, key)
+
+		status, body := postForm(server, "/v1/payment_intents/pi_nopm/confirm", "", key)
+		assert.Equal(t, http.StatusBadRequest, status)
+		errInfo := body["error"].(map[string]interface{})
+		assert.Contains(t, errInfo["message"].(string), "missing a payment method")
+
+		status, _ = postForm(server, "/v1/payment_intents", "amount=100&currency=usd&confirm=true", key)
+		assert.Equal(t, http.StatusBadRequest, status, "create+confirm without a payment method must fail too")
+	})
+
 	t.Run("concurrent captures: exactly one wins", func(t *testing.T) {
 		key := "sk_test_c11"
 		_, pi := postForm(server, "/v1/payment_intents",
