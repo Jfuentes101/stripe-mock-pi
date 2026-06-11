@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -153,8 +152,16 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 			// this is the behavior tests need to reproduce capture races.
 			if status := getString(pi, "status"); status != "requires_capture" {
 				message := fmt.Sprintf("This PaymentIntent could not be captured because it has a status of %s. Only a PaymentIntent with one of the following statuses may be captured: requires_capture.", status)
-				writeResponse(w, r, start, http.StatusBadRequest,
-					createStripeError(typeInvalidRequestError, message))
+				// Raw map instead of createStripeError: real Stripe includes a
+				// `code` here and the upstream ResponseError struct has no field
+				// for it.
+				writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
+					"error": map[string]interface{}{
+						"type":    typeInvalidRequestError,
+						"code":    "payment_intent_unexpected_state",
+						"message": message,
+					},
+				})
 				return true
 			}
 			applyCapture(pi, requestData)
@@ -163,7 +170,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 			applyCancel(pi, requestData)
 			s.recordPaymentIntentTransition(session, pi, false, false)
 		default:
-			applyUpdate(pi, requestData) // a plain update emits no event
+			copyPaymentIntentParams(pi, requestData) // a plain update emits no event
 		}
 
 		s.store.putPaymentIntent(session, id, pi)
@@ -266,11 +273,6 @@ func applyCancel(pi, params map[string]interface{}) {
 	if reason := getString(params, "cancellation_reason"); reason != "" {
 		pi["cancellation_reason"] = reason
 	}
-}
-
-// applyUpdate merges a known set of mutable params into a stored PaymentIntent.
-func applyUpdate(pi, params map[string]interface{}) {
-	copyPaymentIntentParams(pi, params)
 }
 
 //
@@ -393,6 +395,8 @@ func (s *StubServer) recordPaymentIntentTransition(session string, pi map[string
 // ensureChargeForPI creates or updates the Charge backing a PaymentIntent,
 // reusing the PI's latest_charge id when present so capture mutates the same
 // object. The Charge is built on a spec-correct base and stored in the session.
+// NOTE: sets pi["latest_charge"] as a side effect when minting a new charge —
+// callers must run before the PaymentIntent is put back into the store.
 func (s *StubServer) ensureChargeForPI(session string, pi map[string]interface{}, status string, captured bool) map[string]interface{} {
 	id := getString(pi, "latest_charge")
 
@@ -470,19 +474,6 @@ func (s *StubServer) buildEvent(eventType string, object map[string]interface{})
 			"object": deepCopyMap(object),
 		},
 	}
-}
-
-// deepCopyMap returns a JSON-faithful deep copy of a map.
-func deepCopyMap(m map[string]interface{}) map[string]interface{} {
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return m
-	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return m
-	}
-	return out
 }
 
 // paymentIntentStatusEvents maps a PaymentIntent status to the event type emitted

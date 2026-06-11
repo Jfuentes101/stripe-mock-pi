@@ -20,11 +20,6 @@ import (
 // mockControlPrefix namespaces every test-control endpoint.
 const mockControlPrefix = "/v1/_mock/"
 
-// paymentIntentResourceID and chargeResourceID are OpenAPI `x-resourceId`s: keys
-// into both the spec's component schemas and the fixtures map.
-const paymentIntentResourceID = "payment_intent"
-const chargeResourceID = "charge"
-
 // isControlRequest reports whether a request targets the test-control plane.
 func isControlRequest(r *http.Request) bool {
 	return strings.HasPrefix(r.URL.Path, mockControlPrefix)

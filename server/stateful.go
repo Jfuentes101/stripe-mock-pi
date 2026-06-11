@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -32,6 +33,13 @@ const mockStatefulHeader = "X-Stripe-Mock-Stateful"
 
 // defaultSessionID is used when a request carries no usable session identifier.
 const defaultSessionID = "default"
+
+// Resource kinds stored in the session store, keyed by their OpenAPI
+// `x-resourceId` (also the key into the spec's component schemas and fixtures).
+const (
+	paymentIntentResourceID = "payment_intent"
+	chargeResourceID        = "charge"
+)
 
 // sessionStore holds the stateful resources and queued events for a single mock
 // session.
@@ -114,7 +122,10 @@ func (s *statefulStore) putResource(session, resourceID, id string, obj map[stri
 	byID[id] = obj
 }
 
-// getResource returns a stored resource object and whether it existed.
+// getResource returns a copy of a stored resource object and whether it
+// existed. Returning a copy keeps callers free to mutate (and later re-put) the
+// object without racing concurrent readers of the stored map — in system tests
+// the app server thread and the test thread do hit the same session at once.
 func (s *statefulStore) getResource(session, resourceID, id string) (map[string]interface{}, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -127,11 +138,14 @@ func (s *statefulStore) getResource(session, resourceID, id string) (map[string]
 		return nil, false
 	}
 	obj, ok := byID[id]
-	return obj, ok
+	if !ok {
+		return nil, false
+	}
+	return deepCopyMap(obj), true
 }
 
-// listResources returns all stored objects of a resource kind in the session,
-// ordered by id for determinism.
+// listResources returns copies of all stored objects of a resource kind in the
+// session, ordered by id for determinism.
 func (s *statefulStore) listResources(session, resourceID string) []map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -150,9 +164,22 @@ func (s *statefulStore) listResources(session, resourceID string) []map[string]i
 	sort.Strings(ids)
 	objects := make([]map[string]interface{}, 0, len(ids))
 	for _, id := range ids {
-		objects = append(objects, byID[id])
+		objects = append(objects, deepCopyMap(byID[id]))
 	}
 	return objects
+}
+
+// deepCopyMap returns a JSON-faithful deep copy of a map.
+func deepCopyMap(m map[string]interface{}) map[string]interface{} {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return m
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return m
+	}
+	return out
 }
 
 // enqueueEvent appends a webhook-event envelope to the session's queue.
