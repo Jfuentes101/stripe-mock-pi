@@ -281,6 +281,10 @@ objects track the official schema with no hand-maintained fixtures.
 **Lifecycle (`paymentintents.go`):** `create`/`confirm`/`capture`/`cancel`/`update`
 move the object through the state machine. A `confirm`'s outcome is chosen by the
 payment method via the `magicPaymentMethods` table (Stripe's documented test ids).
+Transitions are validated like the real API (capture outside `requires_capture`
+→ 400 `payment_intent_unexpected_state`), and event timing matches Stripe:
+`charge.succeeded` fires at authorization (`captured: false` for manual capture),
+`charge.captured` on capture.
 
 **Events (`recordPaymentIntentTransition`):** each transition builds a `Charge`
 (when settling) and enqueues deep-copied webhook-event envelopes. Nothing is

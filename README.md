@@ -181,8 +181,13 @@ clears the current session — call it between tests.
 PaymentIntent. A POST that references an id the mock has never seen (say, one
 from your app's own DB fixtures, or created before the session opted in)
 **adopts** it: a spec-correct base is built for that id and the lifecycle
-continues from there — just like real Stripe, which would know the id. The
-outcome of a `confirm` is chosen by the payment method, using Stripe's
+continues from there — just like real Stripe, which would know the id.
+
+State transitions are validated like the real API: capturing an intent that
+isn't in `requires_capture` is rejected with an HTTP 400
+`payment_intent_unexpected_state` error, so tests can reproduce capture races.
+
+The outcome of a `confirm` is chosen by the payment method, using Stripe's
 documented [test payment methods](https://stripe.com/docs/testing):
 
 | Payment method | Result on confirm |
@@ -200,11 +205,17 @@ ordering and timing deterministic (no sleeps):
 | Transition | Events queued |
 |---|---|
 | create | `payment_intent.created` |
-| confirm / capture → succeeded | `charge.succeeded`, `payment_intent.succeeded` |
-| confirm with manual capture | `payment_intent.amount_capturable_updated` |
+| confirm (automatic capture) → succeeded | `charge.succeeded`, `payment_intent.succeeded` |
+| confirm (manual capture) → authorized | `charge.succeeded` (with `captured: false`), `payment_intent.amount_capturable_updated` |
+| capture → succeeded | `charge.captured`, `payment_intent.succeeded` |
 | confirm → declined | `charge.failed`, `payment_intent.payment_failed` |
 | confirm → 3DS | `payment_intent.requires_action` |
 | cancel | `payment_intent.canceled` |
+
+Like real Stripe, a manual-capture authorization creates the charge immediately —
+`charge.succeeded` fires at authorization time with `captured: false`, and the
+later capture fires `charge.captured` (not a second `charge.succeeded`). This is
+what lets tests reproduce capture races and books-marked-paid bugs faithfully.
 
 ### Control endpoints
 

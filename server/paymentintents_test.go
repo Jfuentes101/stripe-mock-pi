@@ -99,6 +99,21 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "card_declined", lpe["code"])
 	})
 
+	t.Run("capture on a non-authorized intent is rejected like real Stripe", func(t *testing.T) {
+		key := "sk_test_c9"
+		seedPI(server, `{"id":"pi_slow","status":"requires_payment_method","amount":42899}`, key)
+
+		status, body := postForm(server, "/v1/payment_intents/pi_slow/capture", "", key)
+		assert.Equal(t, http.StatusBadRequest, status)
+		errInfo := body["error"].(map[string]interface{})
+		assert.Equal(t, "invalid_request_error", errInfo["type"])
+		assert.Contains(t, errInfo["message"].(string), "status of requires_payment_method")
+
+		// The intent must be left untouched.
+		_, pi := getResource(server, "/v1/payment_intents/pi_slow", key)
+		assert.Equal(t, "requires_payment_method", pi["status"])
+	})
+
 	t.Run("cancel moves to canceled", func(t *testing.T) {
 		key := "sk_test_c7"
 		seedPI(server, `{"id":"pi_cxl","status":"requires_capture","amount":4000}`, key)
