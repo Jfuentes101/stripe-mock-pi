@@ -79,6 +79,31 @@ func numberValue(v interface{}) (float64, bool) {
 	return 0, false
 }
 
+// expandStatefulPaymentIntent applies the supported `expand[]` requests to a
+// response copy. Only latest_charge is materialized by the stateful layer;
+// other expandable fields keep their ids. The store always holds the id string,
+// so the expansion never touches the stored object.
+func (s *StubServer) expandStatefulPaymentIntent(session string, pi, requestData map[string]interface{}) map[string]interface{} {
+	expansions, _ := extractExpansions(requestData)
+	if expansions == nil {
+		return pi
+	}
+	if _, ok := expansions.expansions["latest_charge"]; !ok {
+		return pi
+	}
+	chargeID := getString(pi, "latest_charge")
+	if chargeID == "" {
+		return pi
+	}
+	charge, found := s.store.getCharge(session, chargeID)
+	if !found {
+		return pi
+	}
+	expanded := deepCopyMap(pi)
+	expanded["latest_charge"] = charge
+	return expanded
+}
+
 // attachPaymentMethod reflects the request's payment method onto the intent,
 // minting a fresh one when supplied inline via payment_method_data.
 func attachPaymentMethod(pi, params map[string]interface{}) {
@@ -154,7 +179,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		if !ok {
 			return false
 		}
-		writeResponse(w, r, start, http.StatusOK, pi)
+		writeResponse(w, r, start, http.StatusOK, s.expandStatefulPaymentIntent(session, pi, requestData))
 		return true
 
 	// Create: a POST to the bare collection endpoint (no path params at all).
@@ -173,7 +198,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 			writeResponse(w, r, start, http.StatusInternalServerError, createInternalServerError())
 			return true
 		}
-		writeResponse(w, r, start, http.StatusOK, pi)
+		writeResponse(w, r, start, http.StatusOK, s.expandStatefulPaymentIntent(session, pi, requestData))
 		return true
 
 	// Action or update on an existing PaymentIntent. Serialized: the store is
@@ -256,7 +281,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		}
 
 		s.store.putPaymentIntent(session, id, pi)
-		writeResponse(w, r, start, http.StatusOK, pi)
+		writeResponse(w, r, start, http.StatusOK, s.expandStatefulPaymentIntent(session, pi, requestData))
 		return true
 	}
 

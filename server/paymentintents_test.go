@@ -164,6 +164,24 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "succeeded", pi["status"])
 	})
 
+	t.Run("expand latest_charge returns the charge object without touching the store", func(t *testing.T) {
+		key := "sk_test_c17"
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true&expand[]=latest_charge", key)
+		charge, ok := pi["latest_charge"].(map[string]interface{})
+		assert.True(t, ok, "latest_charge must be expanded to the charge object")
+		assert.Equal(t, "succeeded", charge["status"])
+		id := pi["id"].(string)
+
+		_, got := getResource(server, "/v1/payment_intents/"+id+"?expand[]=latest_charge", key)
+		_, ok = got["latest_charge"].(map[string]interface{})
+		assert.True(t, ok, "retrieve honors the expansion")
+
+		_, plain := getResource(server, "/v1/payment_intents/"+id, key)
+		_, ok = plain["latest_charge"].(string)
+		assert.True(t, ok, "the stored object keeps the id string")
+	})
+
 	t.Run("retry after decline gets a fresh charge", func(t *testing.T) {
 		key := "sk_test_c16"
 		seedPI(server, `{"id":"pi_retry","status":"requires_confirmation","amount":3000,"currency":"usd"}`, key)
