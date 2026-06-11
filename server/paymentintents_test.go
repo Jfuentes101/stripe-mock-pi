@@ -182,6 +182,35 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.True(t, ok, "the stored object keeps the id string")
 	})
 
+	t.Run("expand payment_intent on a stored charge", func(t *testing.T) {
+		key := "sk_test_c18"
+		_, pi := postForm(server, "/v1/payment_intents",
+			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true", key)
+		chargeID := pi["latest_charge"].(string)
+
+		_, charge := getResource(server, "/v1/charges/"+chargeID+"?expand[]=payment_intent", key)
+		expanded, ok := charge["payment_intent"].(map[string]interface{})
+		assert.True(t, ok, "payment_intent must expand to the intent object")
+		assert.Equal(t, pi["id"], expanded["id"])
+
+		_, plain := getResource(server, "/v1/charges/"+chargeID, key)
+		_, ok = plain["payment_intent"].(string)
+		assert.True(t, ok, "the stored charge keeps the id string")
+	})
+
+	t.Run("updating the payment method makes the intent confirmable", func(t *testing.T) {
+		key := "sk_test_c19"
+		_, pi := postForm(server, "/v1/payment_intents", "amount=1000&currency=usd", key)
+		id := pi["id"].(string)
+		assert.Equal(t, "requires_payment_method", pi["status"])
+
+		_, updated := postForm(server, "/v1/payment_intents/"+id, "payment_method=pm_card_visa", key)
+		assert.Equal(t, "requires_confirmation", updated["status"])
+
+		_, confirmed := postForm(server, "/v1/payment_intents/"+id+"/confirm", "", key)
+		assert.Equal(t, "succeeded", confirmed["status"])
+	})
+
 	t.Run("retry after decline gets a fresh charge", func(t *testing.T) {
 		key := "sk_test_c16"
 		seedPI(server, `{"id":"pi_retry","status":"requires_confirmation","amount":3000,"currency":"usd"}`, key)
