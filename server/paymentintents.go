@@ -104,6 +104,29 @@ func (s *StubServer) expandStatefulPaymentIntent(session string, pi, requestData
 	return expanded
 }
 
+// expandStatefulCharge mirrors expandStatefulPaymentIntent for stored Charges:
+// only payment_intent is materialized; the store keeps the id string.
+func (s *StubServer) expandStatefulCharge(session string, charge, requestData map[string]interface{}) map[string]interface{} {
+	expansions, _ := extractExpansions(requestData)
+	if expansions == nil {
+		return charge
+	}
+	if _, ok := expansions.expansions["payment_intent"]; !ok {
+		return charge
+	}
+	piID := getString(charge, "payment_intent")
+	if piID == "" {
+		return charge
+	}
+	pi, found := s.store.getPaymentIntent(session, piID)
+	if !found {
+		return charge
+	}
+	expanded := deepCopyMap(charge)
+	expanded["payment_intent"] = pi
+	return expanded
+}
+
 // attachPaymentMethod reflects the request's payment method onto the intent,
 // minting a fresh one when supplied inline via payment_method_data.
 func attachPaymentMethod(pi, params map[string]interface{}) {
@@ -158,7 +181,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 	if resourceID == chargeResourceID {
 		if r.Method == http.MethodGet && pathParams != nil && pathParams.PrimaryID != nil {
 			if charge, ok := s.store.getCharge(session, *pathParams.PrimaryID); ok {
-				writeResponse(w, r, start, http.StatusOK, charge)
+				writeResponse(w, r, start, http.StatusOK, s.expandStatefulCharge(session, charge, requestData))
 				return true
 			}
 		}
@@ -278,6 +301,11 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 			s.recordPaymentIntentTransition(session, pi, false, false)
 		default:
 			copyPaymentIntentParams(pi, requestData) // a plain update emits no event
+			attachPaymentMethod(pi, requestData)
+			if getString(pi, "status") == "requires_payment_method" && getString(pi, "payment_method") != "" {
+				// Attaching a payment method makes the intent confirmable.
+				setStatus(pi, "requires_confirmation")
+			}
 		}
 
 		s.store.putPaymentIntent(session, id, pi)
