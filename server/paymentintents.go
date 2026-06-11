@@ -146,13 +146,22 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		switch paymentIntentActionFromPath(r.URL.Path) {
 		case "confirm":
 			applyConfirm(pi, requestData)
-			s.recordPaymentIntentTransition(session, pi, false)
+			s.recordPaymentIntentTransition(session, pi, false, false)
 		case "capture":
+			// Like real Stripe, only an authorized intent can be captured.
+			// Anything else is rejected with payment_intent_unexpected_state —
+			// this is the behavior tests need to reproduce capture races.
+			if status := getString(pi, "status"); status != "requires_capture" {
+				message := fmt.Sprintf("This PaymentIntent could not be captured because it has a status of %s. Only a PaymentIntent with one of the following statuses may be captured: requires_capture.", status)
+				writeResponse(w, r, start, http.StatusBadRequest,
+					createStripeError(typeInvalidRequestError, message))
+				return true
+			}
 			applyCapture(pi, requestData)
-			s.recordPaymentIntentTransition(session, pi, false)
+			s.recordPaymentIntentTransition(session, pi, false, true)
 		case "cancel":
 			applyCancel(pi, requestData)
-			s.recordPaymentIntentTransition(session, pi, false)
+			s.recordPaymentIntentTransition(session, pi, false, false)
 		default:
 			applyUpdate(pi, requestData) // a plain update emits no event
 		}
@@ -194,7 +203,7 @@ func (s *StubServer) createPaymentIntent(session string, params map[string]inter
 		setStatus(pi, "requires_payment_method")
 	}
 
-	s.recordPaymentIntentTransition(session, pi, true)
+	s.recordPaymentIntentTransition(session, pi, true, false)
 	s.store.putPaymentIntent(session, id, pi)
 	return pi, nil
 }
@@ -337,8 +346,10 @@ func resetPaymentIntentLifecycleFields(pi map[string]interface{}) {
 
 // recordPaymentIntentTransition enqueues the events (and builds the Charge) that
 // correspond to a PaymentIntent's current status. isCreate adds a
-// payment_intent.created event ahead of any settlement events.
-func (s *StubServer) recordPaymentIntentTransition(session string, pi map[string]interface{}, isCreate bool) {
+// payment_intent.created event ahead of any settlement events; wasAuthorized
+// marks a settle that captures a previously-authorized (requires_capture)
+// intent, which fires charge.captured instead of charge.succeeded.
+func (s *StubServer) recordPaymentIntentTransition(session string, pi map[string]interface{}, isCreate, wasAuthorized bool) {
 	if isCreate {
 		s.enqueuePIEvent(session, pi, "payment_intent.created")
 	}
@@ -346,11 +357,21 @@ func (s *StubServer) recordPaymentIntentTransition(session string, pi map[string
 	switch getString(pi, "status") {
 	case "succeeded":
 		charge := s.ensureChargeForPI(session, pi, "succeeded", true)
-		s.enqueueChargeEvent(session, charge, "charge.succeeded")
+		// Stripe fires charge.succeeded when the charge is created. Capturing a
+		// previously-authorized charge fires charge.captured instead — the
+		// charge.succeeded for it already fired at authorization time.
+		if wasAuthorized {
+			s.enqueueChargeEvent(session, charge, "charge.captured")
+		} else {
+			s.enqueueChargeEvent(session, charge, "charge.succeeded")
+		}
 		s.enqueuePIEvent(session, pi, "payment_intent.succeeded")
 	case "requires_capture":
-		// Funds are authorized but not captured yet: a charge exists, uncaptured.
-		s.ensureChargeForPI(session, pi, "succeeded", false)
+		// Funds are authorized but not captured yet: the charge exists,
+		// uncaptured — and like real Stripe, charge.succeeded fires NOW (an
+		// uncaptured charge is a successful authorization with captured=false).
+		charge := s.ensureChargeForPI(session, pi, "succeeded", false)
+		s.enqueueChargeEvent(session, charge, "charge.succeeded")
 		s.enqueuePIEvent(session, pi, "payment_intent.amount_capturable_updated")
 	case "requires_action":
 		s.enqueuePIEvent(session, pi, "payment_intent.requires_action")

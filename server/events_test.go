@@ -94,11 +94,16 @@ func TestPaymentIntentEvents(t *testing.T) {
 			"amount=1000&currency=usd&payment_method=pm_card_visa&confirm=true&capture_method=manual", key)
 		id := pi["id"].(string)
 
-		assert.Equal(t, []string{"payment_intent.created", "payment_intent.amount_capturable_updated"},
+		// Authorization creates the (uncaptured) charge, so charge.succeeded
+		// fires now — with captured=false — exactly like real Stripe.
+		assert.Equal(t,
+			[]string{"payment_intent.created", "charge.succeeded", "payment_intent.amount_capturable_updated"},
 			eventTypes(drainEvents(server, key)))
 
+		// Capturing the previously-authorized charge fires charge.captured (its
+		// charge.succeeded already fired at authorization time).
 		postForm(server, "/v1/payment_intents/"+id+"/capture", "", key)
-		assert.Equal(t, []string{"charge.succeeded", "payment_intent.succeeded"},
+		assert.Equal(t, []string{"charge.captured", "payment_intent.succeeded"},
 			eventTypes(drainEvents(server, key)))
 	})
 
