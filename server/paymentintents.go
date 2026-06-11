@@ -481,7 +481,11 @@ func (s *StubServer) ensureChargeForPI(session string, pi map[string]interface{}
 
 	var charge map[string]interface{}
 	if id != "" {
-		if existing, ok := s.store.getCharge(session, id); ok {
+		if existing, ok := s.store.getCharge(session, id); ok &&
+			getString(existing, "status") != "failed" {
+			// Reuse the live (e.g. authorized, uncaptured) charge; a failed
+			// charge belongs to a previous attempt and stays as-is — real
+			// Stripe creates a new charge per confirmation attempt.
 			charge = existing
 		}
 	}
@@ -491,9 +495,7 @@ func (s *StubServer) ensureChargeForPI(session string, pi map[string]interface{}
 			base = map[string]interface{}{}
 		}
 		charge = base
-		if id == "" {
-			id = randomID("ch")
-		}
+		id = randomID("ch")
 		charge["id"] = id
 		pi["latest_charge"] = id
 	}

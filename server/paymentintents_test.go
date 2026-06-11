@@ -152,6 +152,23 @@ func TestStatefulPaymentIntentLifecycle(t *testing.T) {
 		assert.Equal(t, "succeeded", pi["status"])
 	})
 
+	t.Run("retry after decline gets a fresh charge", func(t *testing.T) {
+		key := "sk_test_c16"
+		seedPI(server, `{"id":"pi_retry","status":"requires_confirmation","amount":3000,"currency":"usd"}`, key)
+
+		postForm(server, "/v1/payment_intents/pi_retry/confirm", "payment_method=pm_card_chargeDeclined", key)
+		_, pi := getResource(server, "/v1/payment_intents/pi_retry", key)
+		failedCharge := pi["latest_charge"].(string)
+
+		_, pi = postForm(server, "/v1/payment_intents/pi_retry/confirm", "payment_method=pm_card_visa", key)
+		assert.Equal(t, "succeeded", pi["status"])
+		assert.NotEqual(t, failedCharge, pi["latest_charge"], "each attempt gets its own charge")
+
+		// The failed attempt's charge is preserved untouched.
+		_, old := getResource(server, "/v1/charges/"+failedCharge, key)
+		assert.Equal(t, "failed", old["status"])
+	})
+
 	t.Run("terminal intents reject confirm and cancel", func(t *testing.T) {
 		key := "sk_test_c14"
 		seedPI(server, `{"id":"pi_done","status":"succeeded","payment_method":"pm_card_visa"}`, key)
