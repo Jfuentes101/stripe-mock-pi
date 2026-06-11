@@ -43,6 +43,17 @@ var magicPaymentMethods = map[string]pmOutcome{
 	"pm_card_visa_chargeDeclined":             outcomeDecline,
 }
 
+// confirmHasPaymentMethod reports whether a confirm can proceed: a payment
+// method already attached to the intent, supplied by id, or created inline via
+// payment_method_data (all documented forms in the OpenAPI spec).
+func confirmHasPaymentMethod(pi, params map[string]interface{}) bool {
+	if getString(params, "payment_method") != "" || getString(pi, "payment_method") != "" {
+		return true
+	}
+	_, ok := params["payment_method_data"]
+	return ok
+}
+
 func outcomeForPaymentMethod(paymentMethod string) pmOutcome {
 	if outcome, ok := magicPaymentMethods[paymentMethod]; ok {
 		return outcome
@@ -114,7 +125,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 	// whose suffix isn't a recognized action) fall out of the switch to the
 	// generic generator.
 	case r.Method == http.MethodPost && pathParams == nil:
-		if boolParam(requestData, "confirm") && getString(requestData, "payment_method") == "" {
+		if boolParam(requestData, "confirm") && !confirmHasPaymentMethod(nil, requestData) {
 			writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
 				"error": map[string]interface{}{
 					"type":    typeInvalidRequestError,
@@ -172,7 +183,7 @@ func (s *StubServer) maybeHandleStatefulRequest(w http.ResponseWriter, r *http.R
 		case "confirm":
 			// Real Stripe refuses to confirm an intent with no payment method
 			// attached or supplied.
-			if getString(requestData, "payment_method") == "" && getString(pi, "payment_method") == "" {
+			if !confirmHasPaymentMethod(pi, requestData) {
 				writeResponse(w, r, start, http.StatusBadRequest, map[string]interface{}{
 					"error": map[string]interface{}{
 						"type":    typeInvalidRequestError,
